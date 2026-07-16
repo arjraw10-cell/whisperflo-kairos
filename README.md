@@ -52,8 +52,10 @@ Set `device` in `config.json` to a device index if the default microphone is wro
 - `hotkey`: defaults to `["CTRL", "SHIFT", "SPACE"]`; release any one key to stop
 - `pre_roll_ms`: audio kept before the chord is fully pressed
 - `suppress_chord`: prevents the target app from seeing the dictation hotkey
-- `groq_model`: formatting model, default `openai/gpt-oss-20b`
-- `groq_timeout_s`: maximum wait for formatting; raw Whisper text is used if Groq fails
+- `formatter`: currently `cerebras`
+- `cerebras_model`: formatting model, default `gemma-4-31b`
+- `groq_model`: retained as a future fallback
+- `groq_timeout_s`: maximum wait for the legacy Groq formatter
 
 The MVP starts with `tiny.en` for a fast first test. If accuracy is not good enough, download `ggml-base.en.bin` into `models/` and update `model` in `config.json`.
 
@@ -62,5 +64,5 @@ The MVP starts with `tiny.en` for a fast first test. If accuracy is not good eno
 - Transcription happens after release, not live while speaking.
 - Clipboard insertion works in ordinary desktop text fields. Windows may block injection into an elevated/admin application unless this app is also elevated.
 - The app currently runs in a terminal and exits with `Ctrl+C`; tray UI and packaging are later improvements. It waits until the hotkey is released, transcribes the complete recording, optionally formats it with Groq, and then types it once.
-- Copy `.env.example` to `.env` and put your key in `GROQ_API_KEY`. If the key is missing or Groq fails, the app falls back to the raw local Whisper transcript. The formatter uses Groq's OpenAI-compatible endpoint and disables reasoning with `include_reasoning: false`.
+- Copy `.env.example` to `.env` and put your key in `CEREBRAS_API_KEY`. If the key is missing or Cerebras fails, the app falls back to the raw local Whisper transcript. The formatter uses the Cerebras SDK with streaming enabled and types the result after the stream completes.
 - If the keyboard hook gets interrupted, press and release Ctrl, Z, and X once to reset their physical state.

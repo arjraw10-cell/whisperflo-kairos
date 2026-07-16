@@ -27,6 +27,11 @@ from collections import deque
 import numpy as np
 import sounddevice as sd
 
+try:
+    from cerebras.cloud.sdk import Cerebras
+except ImportError:
+    Cerebras = None
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "config.json"
@@ -136,6 +141,8 @@ class Config:
         # avoids accidental shortcuts without risking Undo/Cut.
         self.suppress_chord = bool(data.get("suppress_chord", True))
         self.streaming = False
+        self.formatter = str(data.get("formatter", "cerebras")).lower()
+        self.cerebras_model = str(data.get("cerebras_model", "gemma-4-31b"))
         self.groq_model = str(data.get("groq_model", "meta-llama/llama-4-scout-17b-16e-instruct"))
         self.groq_timeout_s = max(2, int(data.get("groq_timeout_s", 15)))
 
@@ -419,7 +426,7 @@ class DictationApp:
             logging.info("[no speech detected]")
             return
         logging.info("[text] %s", text)
-        formatted = format_with_groq(text, self.config)
+        formatted = format_with_cerebras(text, self.config)
         if formatted:
             text = formatted
             logging.info("[formatted] %s", text)
@@ -476,6 +483,39 @@ def load_dotenv(path: Path = ROOT / ".env") -> None:
         # .env is the app's explicit configuration. Override any stale
         # GROQ_API_KEY inherited from a parent terminal/session.
         os.environ[key] = value
+
+
+def format_with_cerebras(text: str, config: Config) -> str:
+    api_key = os.environ.get("CEREBRAS_API_KEY", "").strip()
+    if not api_key:
+        logging.info("[Cerebras skipped: CEREBRAS_API_KEY is not set]")
+        return text
+    if Cerebras is None:
+        logging.warning("[Cerebras SDK is not installed; using raw transcript]")
+        return text
+    prompt = (
+        "Clean up this speech transcription for direct insertion into a text field. "
+        "Fix punctuation, capitalization, spacing, and obvious transcription errors. "
+        "Preserve the speaker's exact meaning and wording. Do not add, remove, or "
+        "explain anything. Return only the cleaned text.\n\nTRANSCRIPTION:\n" + text
+    )
+    try:
+        client = Cerebras(api_key=api_key)
+        stream = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "Return only the cleaned transcription."},
+                {"role": "user", "content": prompt},
+            ],
+            model=config.cerebras_model,
+            stream=True,
+            max_completion_tokens=max(256, len(text.split()) * 4),
+            temperature=0,
+        )
+        result = "".join(chunk.choices[0].delta.content or "" for chunk in stream).strip()
+        return result or text
+    except Exception as exc:
+        logging.warning("[Cerebras formatting failed; using raw transcript] %s", exc)
+        return text
 
 
 def format_with_groq(text: str, config: Config) -> str:

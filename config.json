@@ -9,6 +9,8 @@
   "restore_clipboard": true,
   "pre_roll_ms": 350,
   "suppress_chord": true,
+  "formatter": "cerebras",
+  "cerebras_model": "gemma-4-31b",
   "groq_model": "openai/gpt-oss-20b",
   "groq_timeout_s": 15
 }
