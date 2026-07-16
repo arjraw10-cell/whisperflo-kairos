@@ -10,3 +10,5 @@ _inspect/
 *.wav
 *.txt
 release.json
+chats/
+chats.json
