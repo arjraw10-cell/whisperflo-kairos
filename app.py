@@ -192,8 +192,11 @@ class KeyboardHook:
 
     def _run(self) -> None:
         try:
+            # LRESULT is a pointer-sized signed integer; wintypes does not
+            # expose it on every Python/Windows build.
+            lresult = ctypes.c_ssize_t
             callback_type = ctypes.WINFUNCTYPE(
-                wintypes.LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+                lresult, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
             )
 
             @callback_type
@@ -226,10 +229,14 @@ class KeyboardHook:
                 return ctypes.windll.user32.CallNextHookEx(None, n_code, w_param, l_param)
 
             self._proc = callback
-            module = ctypes.windll.kernel32.GetModuleHandleW(None)
-            hook = ctypes.windll.user32.SetWindowsHookExW(
-                WH_KEYBOARD_LL, callback, module, 0
-            )
+            get_module = ctypes.windll.kernel32.GetModuleHandleW
+            get_module.argtypes = [wintypes.LPCWSTR]
+            get_module.restype = wintypes.HMODULE
+            module = get_module(None)
+            set_hook = ctypes.windll.user32.SetWindowsHookExW
+            set_hook.argtypes = [ctypes.c_int, callback_type, wintypes.HINSTANCE, wintypes.DWORD]
+            set_hook.restype = wintypes.HHOOK
+            hook = set_hook(WH_KEYBOARD_LL, callback, module, 0)
             if not hook:
                 raise ctypes.WinError()
             self.ready.set()
