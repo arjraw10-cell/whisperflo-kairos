@@ -514,7 +514,7 @@ def type_text(text: str) -> None:
         if code == 10:
             code = 13
         if code == 13:
-            inputs.append(INPUT(0, _INPUTUNION(ki=KEYBDINPUT(0, 0, KEYEVENTF_UNICODE, 0, None))))
+            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, 0, KEYEVENTF_UNICODE, 0, None))))
             inputs.append(INPUT(0, _INPUTUNION(ki=KEYBDINPUT(0, 0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
         elif code <= 0xFFFF:
             inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, code, KEYEVENTF_UNICODE, 0, None))))
