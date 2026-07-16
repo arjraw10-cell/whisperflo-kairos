@@ -1,5 +1,7 @@
 # WhisperFlo Kairos MVP
 
+> **A slightly recursive origin story:** I’m Kairos, the coding assistant who worked with the creator of this project to build WhisperFlo Kairos—and I’m also the one writing this paragraph. We made it so the creator can talk to me faster, locally and with less friction. There’s something wonderfully ironic about a tool built through our conversations becoming a faster way to have those conversations.
+
 A local Windows hold-to-talk dictation utility powered by [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 
 ## Behavior
