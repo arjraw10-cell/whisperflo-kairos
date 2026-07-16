@@ -13,6 +13,7 @@ import logging
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -330,6 +331,7 @@ class DictationApp:
         self.stream_stop = threading.Event()
         self.stream_thread: threading.Thread | None = None
         self.stream_emitted = ""
+        self.stream_committed = ""
         self.stream_text_lock = threading.Lock()
         self.temp_dir = Path(tempfile.gettempdir()) / "whisperflo-kairos"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -393,6 +395,7 @@ class DictationApp:
             self.recording = True
             self.audio_started_at = time.monotonic()
         self.stream_emitted = ""
+        self.stream_committed = ""
         self.stream_stop.clear()
         if self.config.streaming:
             self.stream_thread = threading.Thread(
@@ -424,26 +427,28 @@ class DictationApp:
             return np.concatenate(self.blocks) if self.blocks else np.array([], dtype=np.float32)
 
     def _stream_transcription(self) -> None:
-        """Periodically decode the growing recording and type only new text.
+        """Decode growing audio, but type only stable, committed words.
 
-        Whisper is not truly token-streaming through the CLI, so this uses
-        overlapping full-context decodes. Text is emitted only when the new
-        result still has the already-typed text as a prefix, preventing most
-        duplicate typing while keeping latency reasonable on a CPU.
+        Whisper revises the last words as more context arrives. Typing every
+        prefix immediately causes awkward output and forces destructive
+        backspaces. We keep the newest two words as an uncommitted tail and
+        only inject the stable prefix.
         """
         while not self.stream_stop.wait(self.config.stream_interval_ms / 1000):
             samples = self._snapshot_samples()
-            if len(samples) < 16000:  # wait until there is at least one second
+            if len(samples) < 16000:
                 continue
             text = self._decode(samples, "stream")
             if not text:
                 continue
             with self.stream_text_lock:
-                if text.startswith(self.stream_emitted):
-                    delta = text[len(self.stream_emitted):].lstrip()
+                stable = stable_prefix(text, keep_words=2)
+                if stable.startswith(self.stream_committed):
+                    delta = stable[len(self.stream_committed):].lstrip()
                     if delta:
                         type_text(delta)
-                    self.stream_emitted = text
+                    self.stream_committed = stable
+                    self.stream_emitted = stable
                     logging.info("[partial] %s", text)
                 else:
                     logging.info("[partial revision skipped] %s", text)
@@ -458,22 +463,20 @@ class DictationApp:
             return
         logging.info("[text] %s", text)
         with self.stream_text_lock:
-            already_typed = self.stream_emitted
+            already_typed = self.stream_committed
             if self.config.type_text:
-                if not already_typed:
-                    type_text(text)
-                elif text.startswith(already_typed):
+                if text.startswith(already_typed):
                     delta = text[len(already_typed):].lstrip()
                     if delta:
                         type_text(delta)
                 else:
-                    # Whisper may revise a partial phrase. Remove the partial
-                    # text already injected, then type the authoritative final
-                    # result so release never leaves an incomplete sentence.
-                    erase_text(already_typed)
+                    # Defensive fallback for an unexpected revision: replace
+                    # everything this dictation emitted with the final text.
+                    logging.info("[final revision]")
+                    erase_text(self.stream_emitted)
                     type_text(text)
-                    self.stream_emitted = text
-                    logging.info("[partial corrected by final result]")
+                self.stream_emitted = text
+                self.stream_committed = text
             elif self.config.paste:
                 paste_text(text, self.config.restore_clipboard)
 
@@ -513,6 +516,14 @@ class DictationApp:
                 wav_path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+
+def stable_prefix(text: str, keep_words: int = 2) -> str:
+    """Return text excluding a small trailing revision window."""
+    words = text.split()
+    if len(words) <= keep_words:
+        return ""
+    return " ".join(words[:-keep_words]) + " "
 
 
 def write_wav(path: Path, samples: np.ndarray) -> None:
