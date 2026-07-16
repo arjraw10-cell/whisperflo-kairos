@@ -467,7 +467,13 @@ class DictationApp:
                     if delta:
                         type_text(delta)
                 else:
-                    logging.warning("Final transcription revised earlier text; not duplicating output")
+                    # Whisper may revise a partial phrase. Remove the partial
+                    # text already injected, then type the authoritative final
+                    # result so release never leaves an incomplete sentence.
+                    erase_text(already_typed)
+                    type_text(text)
+                    self.stream_emitted = text
+                    logging.info("[partial corrected by final result]")
             elif self.config.paste:
                 paste_text(text, self.config.restore_clipboard)
 
@@ -557,6 +563,22 @@ def type_text(text: str) -> None:
             "Could not type all text (SendInput returned %s/%s, WinError %s)",
             sent, len(inputs), error,
         )
+
+
+def erase_text(text: str) -> None:
+    """Delete characters previously emitted by streaming typing."""
+    if not text:
+        return
+    count = len(text)
+    inputs = []
+    for _ in range(count):
+        inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0x08, 0, 0, 0, 0))))
+        inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0x08, 0, KEYEVENTF_KEYUP, 0, 0))))
+    array = (INPUT * len(inputs))(*inputs)
+    send_input = ctypes.windll.user32.SendInput
+    send_input.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    send_input.restype = wintypes.UINT
+    send_input(len(inputs), array, ctypes.sizeof(INPUT))
 
 
 def paste_text(text: str, restore: bool) -> None:
