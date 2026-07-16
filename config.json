@@ -6,5 +6,6 @@
   "device": null,
   "paste": true,
   "restore_clipboard": true,
-  "pre_roll_ms": 350
+  "pre_roll_ms": 350,
+  "suppress_chord": false
 }

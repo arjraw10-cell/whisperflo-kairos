@@ -50,6 +50,7 @@ Set `device` in `config.json` to a device index if the default microphone is wro
 - `paste`: set to `false` to only print transcription
 - `restore_clipboard`: restore the previous text clipboard after pasting
 - `pre_roll_ms`: audio kept before the chord is fully pressed
+- `suppress_chord`: leave `false` initially; set `true` only if you want to prevent the target app from seeing Undo/Cut. The safe default lets all keys pass through, so a hook problem cannot make the keyboard appear stuck.
 
 The MVP starts with `tiny.en` for a fast first test. If accuracy is not good enough, download `ggml-base.en.bin` into `models/` and update `model` in `config.json`.
 

@@ -90,6 +90,9 @@ class Config:
         self.paste = bool(data.get("paste", True))
         self.restore_clipboard = bool(data.get("restore_clipboard", True))
         self.pre_roll_ms = max(0, int(data.get("pre_roll_ms", 350)))
+        # Never risk making the keyboard unusable by default. When enabled,
+        # the hook consumes Ctrl+Z+X to prevent Undo/Cut in the target app.
+        self.suppress_chord = bool(data.get("suppress_chord", False))
 
 
 class Clipboard:
@@ -169,8 +172,9 @@ class KeyboardHook:
     only via a queue, so audio/transcription never happens inside the hook.
     """
 
-    def __init__(self, events: queue.Queue[str]):
+    def __init__(self, events: queue.Queue[str], suppress_chord: bool = False):
         self.events = events
+        self.suppress_chord = suppress_chord
         self.pressed: set[int] = set()
         self.active = False
         self.stop_requested = threading.Event()
@@ -224,9 +228,10 @@ class KeyboardHook:
                             self.active = False
                             self.events.put("stop")
 
-                        # Consume the whole chord, including the key-up that
-                        # ends it, so the target app never sees Undo/Cut.
-                        if self.active or was_active:
+                        # Optional: consume the chord so the target app does
+                        # not see Undo/Cut. Disabled by default because a hook
+                        # failure must never leave the user's keyboard stuck.
+                        if self.suppress_chord and (self.active or was_active):
                             return 1
                 call_next = ctypes.windll.user32.CallNextHookEx
                 call_next.argtypes = [wintypes.HHOOK, ctypes.c_int, WPARAM, LPARAM]
@@ -267,7 +272,7 @@ class DictationApp:
         self.pre_roll_samples = int(16000 * config.pre_roll_ms / 1000)
         self.audio_error: Exception | None = None
         self.stream: sd.InputStream | None = None
-        self.keyboard = KeyboardHook(self.events)
+        self.keyboard = KeyboardHook(self.events, config.suppress_chord)
         self.transcribing = threading.Lock()
         self.temp_dir = Path(tempfile.gettempdir()) / "whisperflo-kairos"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
