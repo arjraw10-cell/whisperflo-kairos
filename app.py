@@ -136,7 +136,7 @@ class Config:
         # avoids accidental shortcuts without risking Undo/Cut.
         self.suppress_chord = bool(data.get("suppress_chord", True))
         self.streaming = False
-        self.groq_model = str(data.get("groq_model", "qwen/qwen3.6-27b"))
+        self.groq_model = str(data.get("groq_model", "meta-llama/llama-4-scout-17b-16e-instruct"))
         self.groq_timeout_s = max(2, int(data.get("groq_timeout_s", 15)))
 
 
