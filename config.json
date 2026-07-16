@@ -9,6 +9,6 @@
   "restore_clipboard": true,
   "pre_roll_ms": 350,
   "suppress_chord": true,
-  "groq_model": "qwen/qwen3.6-27b",
+  "groq_model": "openai/gpt-oss-20b",
   "groq_timeout_s": 15
 }

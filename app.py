@@ -492,7 +492,7 @@ def format_with_groq(text: str, config: Config) -> str:
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
         "max_completion_tokens": max(256, len(text.split()) * 4),
-        "reasoning_effort": "none",
+        "include_reasoning": False,
     }).encode("utf-8")
     request = urllib.request.Request(
         "https://api.groq.com/openai/v1/chat/completions",
