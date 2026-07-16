@@ -473,7 +473,9 @@ def load_dotenv(path: Path = ROOT / ".env") -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+        # .env is the app's explicit configuration. Override any stale
+        # GROQ_API_KEY inherited from a parent terminal/session.
+        os.environ[key] = value
 
 
 def format_with_groq(text: str, config: Config) -> str:
@@ -508,6 +510,16 @@ def format_with_groq(text: str, config: Config) -> str:
             payload = json.loads(response.read().decode("utf-8"))
         result = payload["choices"][0]["message"]["content"].strip()
         return result or text
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            detail = str(exc)
+        logging.warning(
+            "[Groq formatting failed; using raw transcript] HTTP %s: %s",
+            exc.code, detail[:1000],
+        )
+        return text
     except Exception as exc:
         logging.warning("[Groq formatting failed; using raw transcript] %s", exc)
         return text
