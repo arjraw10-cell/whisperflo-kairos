@@ -1,0 +1,10 @@
+{
+  "model": "models/ggml-base.en.bin",
+  "whisper_cli": "bin/Release/whisper-cli.exe",
+  "language": "en",
+  "threads": 4,
+  "device": null,
+  "paste": true,
+  "restore_clipboard": true,
+  "pre_roll_ms": 350
+}
