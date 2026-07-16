@@ -11,10 +11,10 @@ if (!(Test-Path 'bin\Release\whisper-cli.exe')) {
     Remove-Item 'whisper-bin.zip'
 }
 
-if (!(Test-Path 'models\ggml-base.en.bin')) {
+if (!(Test-Path 'models\ggml-tiny.en.bin')) {
     New-Item -ItemType Directory -Force 'models' | Out-Null
-    Write-Host 'Downloading the base.en Whisper model (~142 MB)...'
-    Invoke-WebRequest -Uri 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin?download=true' -OutFile 'models\ggml-base.en.bin'
+    Write-Host 'Downloading the tiny.en Whisper model (~14 MB)...'
+    Invoke-WebRequest -Uri 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin?download=true' -OutFile 'models\ggml-tiny.en.bin'
 }
 
 Write-Host ''

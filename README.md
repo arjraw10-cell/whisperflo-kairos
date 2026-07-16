@@ -45,13 +45,13 @@ Set `device` in `config.json` to a device index if the default microphone is wro
 
 `config.json` controls:
 
-- `model`: defaults to `models/ggml-base.en.bin`
+- `model`: defaults to `models/ggml-tiny.en.bin`
 - `threads`: CPU threads used by Whisper
 - `paste`: set to `false` to only print transcription
 - `restore_clipboard`: restore the previous text clipboard after pasting
 - `pre_roll_ms`: audio kept before the chord is fully pressed
 
-The first test can use `tiny.en` if `base.en` is too slow. Download the corresponding model into `models/` and update `model`.
+The MVP starts with `tiny.en` for a fast first test. If accuracy is not good enough, download `ggml-base.en.bin` into `models/` and update `model` in `config.json`.
 
 ## Notes
 
