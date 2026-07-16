@@ -205,37 +205,45 @@ class KeyboardHook:
                 LRESULT, ctypes.c_int, WPARAM, LPARAM
             )
 
+            call_next = ctypes.windll.user32.CallNextHookEx
+            call_next.argtypes = [wintypes.HHOOK, ctypes.c_int, WPARAM, LPARAM]
+            call_next.restype = LRESULT
+
             @callback_type
             def callback(n_code, w_param, l_param):
-                if n_code >= 0:
-                    info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                    vk = int(info.vkCode)
-                    down = w_param in (WM_KEYDOWN, WM_SYSKEYDOWN)
-                    up = w_param in (WM_KEYUP, WM_SYSKEYUP)
-                    tracked = CTRL_KEYS | {VK_Z, VK_X}
-                    if vk in tracked:
-                        was_active = self.active
-                        if down:
-                            self.pressed.add(VK_CONTROL if vk in CTRL_KEYS else vk)
-                        elif up:
-                            self.pressed.discard(VK_CONTROL if vk in CTRL_KEYS else vk)
+                # A low-level hook must never let a Python exception escape:
+                # Windows may interpret an invalid callback return as a
+                # blocked keyboard event. Always fail open and pass the event
+                # to the next hook.
+                try:
+                    if n_code >= 0:
+                        info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                        vk = int(info.vkCode)
+                        down = w_param in (WM_KEYDOWN, WM_SYSKEYDOWN)
+                        up = w_param in (WM_KEYUP, WM_SYSKEYUP)
+                        tracked = CTRL_KEYS | {VK_Z, VK_X}
+                        if vk in tracked:
+                            was_active = self.active
+                            if down:
+                                self.pressed.add(VK_CONTROL if vk in CTRL_KEYS else vk)
+                            elif up:
+                                self.pressed.discard(VK_CONTROL if vk in CTRL_KEYS else vk)
 
-                        now_active = {VK_CONTROL, VK_Z, VK_X}.issubset(self.pressed)
-                        if now_active and not self.active:
-                            self.active = True
-                            self.events.put("start")
-                        elif self.active and not now_active:
-                            self.active = False
-                            self.events.put("stop")
+                            now_active = {VK_CONTROL, VK_Z, VK_X}.issubset(self.pressed)
+                            if now_active and not self.active:
+                                self.active = True
+                                self.events.put("start")
+                            elif self.active and not now_active:
+                                self.active = False
+                                self.events.put("stop")
 
-                        # Optional: consume the chord so the target app does
-                        # not see Undo/Cut. Disabled by default because a hook
-                        # failure must never leave the user's keyboard stuck.
-                        if self.suppress_chord and (self.active or was_active):
-                            return 1
-                call_next = ctypes.windll.user32.CallNextHookEx
-                call_next.argtypes = [wintypes.HHOOK, ctypes.c_int, WPARAM, LPARAM]
-                call_next.restype = LRESULT
+                            # Optional: consume the chord so the target app does
+                            # not see Undo/Cut. Disabled by default because a hook
+                            # failure must never leave the user's keyboard stuck.
+                            if self.suppress_chord and (self.active or was_active):
+                                return 1
+                except Exception:
+                    logging.exception("Keyboard hook callback failed; passing event through")
                 return call_next(None, n_code, w_param, l_param)
 
             self._proc = callback
