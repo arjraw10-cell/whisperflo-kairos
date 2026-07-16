@@ -59,5 +59,5 @@ The MVP starts with `tiny.en` for a fast first test. If accuracy is not good eno
 
 - Transcription happens after release, not live while speaking.
 - Clipboard insertion works in ordinary desktop text fields. Windows may block injection into an elevated/admin application unless this app is also elevated.
-- The app currently runs in a terminal and exits with `Ctrl+C`; tray UI and packaging are later improvements. With streaming enabled, it periodically decodes the growing audio and types only newly recognized text; final transcription fills in any remaining text.
+- The app currently runs in a terminal and exits with `Ctrl+C`; tray UI and packaging are later improvements. With streaming enabled, it periodically decodes the growing audio and types only newly recognized text; releasing the hotkey only ends recording—the final transcription continues in the background until it finishes typing.
 - If the keyboard hook gets interrupted, press and release Ctrl, Z, and X once to reset their physical state.

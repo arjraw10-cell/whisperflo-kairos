@@ -415,6 +415,8 @@ class DictationApp:
         if len(samples) < 1600:  # less than 100 ms
             logging.info("[ignored: recording too short]")
             return
+        # The final decode must run even if a streaming decode is still in
+        # progress. It waits for that decode instead of being dropped.
         threading.Thread(target=self.transcribe, args=(samples,), daemon=True).start()
 
     def _snapshot_samples(self) -> np.ndarray:
@@ -447,7 +449,10 @@ class DictationApp:
                     logging.info("[partial revision skipped] %s", text)
 
     def transcribe(self, samples: np.ndarray) -> None:
-        text = self._decode(samples, "final")
+        # If a periodic streaming decode is still running, wait for it rather
+        # than dropping the final result. Release of the hotkey only ends
+        # recording; it must never cancel output already queued for typing.
+        text = self._decode(samples, "final", wait=True)
         if not text:
             logging.info("[no speech detected]")
             return
@@ -466,8 +471,9 @@ class DictationApp:
             elif self.config.paste:
                 paste_text(text, self.config.restore_clipboard)
 
-    def _decode(self, samples: np.ndarray, label: str) -> str:
-        if not self.transcribing.acquire(blocking=False):
+    def _decode(self, samples: np.ndarray, label: str, wait: bool = False) -> str:
+        acquired = self.transcribing.acquire(blocking=wait)
+        if not acquired:
             return ""
         wav_path = self.temp_dir / f"{label}-{os.getpid()}-{time.time_ns()}.wav"
         try:
