@@ -54,8 +54,9 @@ VK_TO_KEY = {vk: name for name, keys in KEY_GROUPS.items() for vk in keys}
 WPARAM = ctypes.c_size_t
 LPARAM = ctypes.c_ssize_t
 LRESULT = ctypes.c_ssize_t
+ULONG_PTR = ctypes.c_size_t
 
-# Clipboard constants.
+# Clipboard/constants for keyboard injection.
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 INPUT_KEYBOARD = 1
@@ -79,12 +80,33 @@ class KEYBDINPUT(ctypes.Structure):
         ("wScan", wintypes.WORD),
         ("dwFlags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
     ]
 
 
 class _INPUTUNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT)]
+    # INPUT's union must include the largest member. Omitting MOUSEINPUT
+    # makes sizeof(INPUT) wrong on 64-bit Windows, causing SendInput to return 0.
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
 
 
 class INPUT(ctypes.Structure):
@@ -505,30 +527,30 @@ def clean_transcription(output: str) -> str:
 
 
 def type_text(text: str) -> None:
-    """Type Unicode text directly using SendInput, without the clipboard."""
+    """Type Unicode text directly using correctly sized Windows INPUT structs."""
     if not text:
         return
     inputs = []
     for char in text:
-        code = ord(char)
-        if code == 10:
-            code = 13
-        if code == 13:
-            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, 0, KEYEVENTF_UNICODE, 0, None))))
-            inputs.append(INPUT(0, _INPUTUNION(ki=KEYBDINPUT(0, 0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
-        elif code <= 0xFFFF:
-            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, code, KEYEVENTF_UNICODE, 0, None))))
-            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
-        else:
-            code -= 0x10000
-            for unit in (0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF)):
-                inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE, 0, None))))
-                inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
-    if inputs:
-        array = (INPUT * len(inputs))(*inputs)
-        sent = ctypes.windll.user32.SendInput(len(inputs), ctypes.byref(array), ctypes.sizeof(INPUT))
-        if sent != len(inputs):
-            logging.warning("Could not type all text (SendInput returned %s/%s)", sent, len(inputs))
+        code = 13 if char == "\n" else ord(char)
+        units = [code] if code <= 0xFFFF else [
+            0xD800 + ((code - 0x10000) >> 10),
+            0xDC00 + ((code - 0x10000) & 0x3FF),
+        ]
+        for unit in units:
+            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE, 0, 0))))
+            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, 0))))
+    array = (INPUT * len(inputs))(*inputs)
+    send_input = ctypes.windll.user32.SendInput
+    send_input.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    send_input.restype = wintypes.UINT
+    sent = send_input(len(inputs), array, ctypes.sizeof(INPUT))
+    if sent != len(inputs):
+        error = ctypes.get_last_error()
+        logging.warning(
+            "Could not type all text (SendInput returned %s/%s, WinError %s)",
+            sent, len(inputs), error,
+        )
 
 
 def paste_text(text: str, restore: bool) -> None:
@@ -546,7 +568,10 @@ def paste_text(text: str, restore: bool) -> None:
     inputs[2].ki = KEYBDINPUT(0x56, 0, 2, 0, None)
     inputs[3].type = 1
     inputs[3].ki = KEYBDINPUT(VK_CONTROL, 0, 2, 0, None)
-    sent = ctypes.windll.user32.SendInput(4, ctypes.byref(inputs), ctypes.sizeof(INPUT))
+    send_input = ctypes.windll.user32.SendInput
+    send_input.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    send_input.restype = wintypes.UINT
+    sent = send_input(4, inputs, ctypes.sizeof(INPUT))
     if sent != 4:
         logging.warning("Could not inject Ctrl+V (SendInput returned %s)", sent)
     time.sleep(0.15)
