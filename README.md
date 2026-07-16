@@ -51,7 +51,9 @@ Set `device` in `config.json` to a device index if the default microphone is wro
 - `restore_clipboard`: restore the previous text clipboard after pasting
 - `hotkey`: defaults to `["CTRL", "SHIFT", "SPACE"]`; release any one key to stop
 - `pre_roll_ms`: audio kept before the chord is fully pressed
-- `suppress_chord`: leave `false` initially; set `true` only if you want to prevent the target app from seeing the hotkey. The safe default lets all keys pass through, so a hook problem cannot make the keyboard appear stuck.
+- `suppress_chord`: prevents the target app from seeing the dictation hotkey
+- `groq_model`: formatting model, default `qwen/qwen3.6-27b`
+- `groq_timeout_s`: maximum wait for formatting; raw Whisper text is used if Groq fails
 
 The MVP starts with `tiny.en` for a fast first test. If accuracy is not good enough, download `ggml-base.en.bin` into `models/` and update `model` in `config.json`.
 
@@ -59,5 +61,6 @@ The MVP starts with `tiny.en` for a fast first test. If accuracy is not good eno
 
 - Transcription happens after release, not live while speaking.
 - Clipboard insertion works in ordinary desktop text fields. Windows may block injection into an elevated/admin application unless this app is also elevated.
-- The app currently runs in a terminal and exits with `Ctrl+C`; tray UI and packaging are later improvements. With streaming enabled, it periodically decodes the growing audio and types only newly recognized text; releasing the hotkey only ends recording—the final transcription continues in the background until it finishes typing.
+- The app currently runs in a terminal and exits with `Ctrl+C`; tray UI and packaging are later improvements. It waits until the hotkey is released, transcribes the complete recording, optionally formats it with Groq, and then types it once.
+- Copy `.env.example` to `.env` and put your key in `GROQ_API_KEY`. If the key is missing or Groq fails, the app falls back to the raw local Whisper transcript.
 - If the keyboard hook gets interrupted, press and release Ctrl, Z, and X once to reset their physical state.

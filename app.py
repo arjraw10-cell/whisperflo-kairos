@@ -18,6 +18,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 import time
 import wave
 from collections import deque
@@ -133,9 +135,9 @@ class Config:
         # Ctrl/Shift/Space have no edit action, so consuming the active chord
         # avoids accidental shortcuts without risking Undo/Cut.
         self.suppress_chord = bool(data.get("suppress_chord", True))
-        self.streaming = bool(data.get("streaming", True))
-        self.stream_interval_ms = max(800, int(data.get("stream_interval_ms", 1800)))
-        self.type_text = bool(data.get("type_text", True))
+        self.streaming = False
+        self.groq_model = str(data.get("groq_model", "qwen/qwen3.6-27b"))
+        self.groq_timeout_s = max(2, int(data.get("groq_timeout_s", 15)))
 
 
 class Clipboard:
@@ -328,11 +330,6 @@ class DictationApp:
         self.stream: sd.InputStream | None = None
         self.keyboard = KeyboardHook(self.events, config.hotkey, config.suppress_chord)
         self.transcribing = threading.Lock()
-        self.stream_stop = threading.Event()
-        self.stream_thread: threading.Thread | None = None
-        self.stream_emitted = ""
-        self.stream_committed = ""
-        self.stream_text_lock = threading.Lock()
         self.temp_dir = Path(tempfile.gettempdir()) / "whisperflo-kairos"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -394,14 +391,6 @@ class DictationApp:
             self.blocks = list(self.pre_roll)
             self.recording = True
             self.audio_started_at = time.monotonic()
-        self.stream_emitted = ""
-        self.stream_committed = ""
-        self.stream_stop.clear()
-        if self.config.streaming:
-            self.stream_thread = threading.Thread(
-                target=self._stream_transcription, name="stream-transcription", daemon=True
-            )
-            self.stream_thread.start()
         logging.info("[listening]")
 
     def stop_recording(self) -> None:
@@ -411,10 +400,6 @@ class DictationApp:
             self.recording = False
             samples = np.concatenate(self.blocks) if self.blocks else np.array([], dtype=np.float32)
             self.blocks = []
-        self.stream_stop.set()
-        if self.stream_thread and self.stream_thread is not threading.current_thread():
-            self.stream_thread.join(timeout=4)
-        self.stream_thread = None
         if len(samples) < 1600:  # less than 100 ms
             logging.info("[ignored: recording too short]")
             return
@@ -426,59 +411,19 @@ class DictationApp:
         with self.audio_lock:
             return np.concatenate(self.blocks) if self.blocks else np.array([], dtype=np.float32)
 
-    def _stream_transcription(self) -> None:
-        """Decode growing audio, but type only stable, committed words.
-
-        Whisper revises the last words as more context arrives. Typing every
-        prefix immediately causes awkward output and forces destructive
-        backspaces. We keep the newest two words as an uncommitted tail and
-        only inject the stable prefix.
-        """
-        while not self.stream_stop.wait(self.config.stream_interval_ms / 1000):
-            samples = self._snapshot_samples()
-            if len(samples) < 16000:
-                continue
-            text = self._decode(samples, "stream")
-            if not text:
-                continue
-            with self.stream_text_lock:
-                stable = stable_prefix(text, keep_words=2)
-                if stable.startswith(self.stream_committed):
-                    delta = stable[len(self.stream_committed):].lstrip()
-                    if delta:
-                        type_text(delta)
-                    self.stream_committed = stable
-                    self.stream_emitted = stable
-                    logging.info("[partial] %s", text)
-                else:
-                    logging.info("[partial revision skipped] %s", text)
-
     def transcribe(self, samples: np.ndarray) -> None:
-        # If a periodic streaming decode is still running, wait for it rather
-        # than dropping the final result. Release of the hotkey only ends
-        # recording; it must never cancel output already queued for typing.
+        # Nothing is typed while recording. Release ends recording, then the
+        # local transcript is optionally cleaned up by Groq before insertion.
         text = self._decode(samples, "final", wait=True)
         if not text:
             logging.info("[no speech detected]")
             return
         logging.info("[text] %s", text)
-        with self.stream_text_lock:
-            already_typed = self.stream_committed
-            if self.config.type_text:
-                if text.startswith(already_typed):
-                    delta = text[len(already_typed):].lstrip()
-                    if delta:
-                        type_text(delta)
-                else:
-                    # Defensive fallback for an unexpected revision: replace
-                    # everything this dictation emitted with the final text.
-                    logging.info("[final revision]")
-                    erase_text(self.stream_emitted)
-                    type_text(text)
-                self.stream_emitted = text
-                self.stream_committed = text
-            elif self.config.paste:
-                paste_text(text, self.config.restore_clipboard)
+        formatted = format_with_groq(text, self.config)
+        if formatted:
+            text = formatted
+            logging.info("[formatted] %s", text)
+        type_text(text)
 
     def _decode(self, samples: np.ndarray, label: str, wait: bool = False) -> str:
         acquired = self.transcribing.acquire(blocking=wait)
@@ -518,12 +463,54 @@ class DictationApp:
                 pass
 
 
-def stable_prefix(text: str, keep_words: int = 2) -> str:
-    """Return text excluding a small trailing revision window."""
-    words = text.split()
-    if len(words) <= keep_words:
-        return ""
-    return " ".join(words[:-keep_words]) + " "
+def load_dotenv(path: Path = ROOT / ".env") -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+def format_with_groq(text: str, config: Config) -> str:
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not api_key:
+        logging.info("[Groq skipped: GROQ_API_KEY is not set]")
+        return text
+    prompt = (
+        "Clean up this speech transcription for direct insertion into a text field. "
+        "Fix punctuation, capitalization, spacing, and obvious transcription errors. "
+        "Preserve the speaker's exact meaning and wording. Do not add, remove, or "
+        "explain anything. Return only the cleaned text.\n\nTRANSCRIPTION:\n" + text
+    )
+    body = json.dumps({
+        "model": config.groq_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_completion_tokens": max(256, len(text.split()) * 4),
+        "reasoning_effort": "none",
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=config.groq_timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        result = payload["choices"][0]["message"]["content"].strip()
+        return result or text
+    except Exception as exc:
+        logging.warning("[Groq formatting failed; using raw transcript] %s", exc)
+        return text
 
 
 def write_wav(path: Path, samples: np.ndarray) -> None:
@@ -635,6 +622,7 @@ def main() -> int:
     if args.list_devices:
         print(sd.query_devices())
         return 0
+    load_dotenv()
     config = load_config(args.config)
     if args.no_paste:
         config.paste = False

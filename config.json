@@ -9,7 +9,6 @@
   "restore_clipboard": true,
   "pre_roll_ms": 350,
   "suppress_chord": true,
-  "streaming": true,
-  "stream_interval_ms": 1800,
-  "type_text": true
+  "groq_model": "qwen/qwen3.6-27b",
+  "groq_timeout_s": 15
 }
