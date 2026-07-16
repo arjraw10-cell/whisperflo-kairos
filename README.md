@@ -4,7 +4,7 @@ A local Windows hold-to-talk dictation utility powered by [whisper.cpp](https://
 
 ## Behavior
 
-Hold **Ctrl+Z+X**, speak, then release any one of those keys. The audio is transcribed locally and pasted into the focused text field. The chord is consumed while active so it should not trigger Undo/Cut.
+Hold **Ctrl+Shift+Space**, speak, then release any one of those keys. The audio is transcribed locally and pasted into the focused text field. This safer chord uses only modifier/non-editing keys by default.
 
 This MVP uses the CPU whisper.cpp binary. It works with integrated graphics because it does not require a discrete GPU; performance depends on your CPU and model.
 
@@ -49,8 +49,9 @@ Set `device` in `config.json` to a device index if the default microphone is wro
 - `threads`: CPU threads used by Whisper
 - `paste`: set to `false` to only print transcription
 - `restore_clipboard`: restore the previous text clipboard after pasting
+- `hotkey`: defaults to `["CTRL", "SHIFT", "SPACE"]`; release any one key to stop
 - `pre_roll_ms`: audio kept before the chord is fully pressed
-- `suppress_chord`: leave `false` initially; set `true` only if you want to prevent the target app from seeing Undo/Cut. The safe default lets all keys pass through, so a hook problem cannot make the keyboard appear stuck.
+- `suppress_chord`: leave `false` initially; set `true` only if you want to prevent the target app from seeing the hotkey. The safe default lets all keys pass through, so a hook problem cannot make the keyboard appear stuck.
 
 The MVP starts with `tiny.en` for a fast first test. If accuracy is not good enough, download `ggml-base.en.bin` into `models/` and update `model` in `config.json`.
 
@@ -58,5 +59,5 @@ The MVP starts with `tiny.en` for a fast first test. If accuracy is not good eno
 
 - Transcription happens after release, not live while speaking.
 - Clipboard insertion works in ordinary desktop text fields. Windows may block injection into an elevated/admin application unless this app is also elevated.
-- The app currently runs in a terminal and exits with `Ctrl+C`; tray UI and packaging are later improvements.
+- The app currently runs in a terminal and exits with `Ctrl+C`; tray UI and packaging are later improvements. With streaming enabled, it periodically decodes the growing audio and types only newly recognized text; final transcription fills in any remaining text.
 - If the keyboard hook gets interrupted, press and release Ctrl, Z, and X once to reset their physical state.

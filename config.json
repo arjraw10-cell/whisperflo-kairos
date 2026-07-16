@@ -1,5 +1,6 @@
 {
   "model": "models/ggml-tiny.en.bin",
+  "hotkey": ["CTRL", "SHIFT", "SPACE"],
   "whisper_cli": "bin/Release/whisper-cli.exe",
   "language": "en",
   "threads": 4,
@@ -7,5 +8,8 @@
   "paste": true,
   "restore_clipboard": true,
   "pre_roll_ms": 350,
-  "suppress_chord": false
+  "suppress_chord": true,
+  "streaming": true,
+  "stream_interval_ms": 1800,
+  "type_text": true
 }

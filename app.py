@@ -40,6 +40,17 @@ VK_RCONTROL = 0xA3
 VK_Z = 0x5A
 VK_X = 0x58
 CTRL_KEYS = {VK_CONTROL, VK_LCONTROL, VK_RCONTROL}
+VK_SHIFT = 0x10
+VK_LSHIFT = 0xA0
+VK_RSHIFT = 0xA1
+SHIFT_KEYS = {VK_SHIFT, VK_LSHIFT, VK_RSHIFT}
+VK_SPACE = 0x20
+KEY_GROUPS = {
+    "CTRL": CTRL_KEYS,
+    "SHIFT": SHIFT_KEYS,
+    "SPACE": {VK_SPACE},
+}
+VK_TO_KEY = {vk: name for name, keys in KEY_GROUPS.items() for vk in keys}
 WPARAM = ctypes.c_size_t
 LPARAM = ctypes.c_ssize_t
 LRESULT = ctypes.c_ssize_t
@@ -47,6 +58,9 @@ LRESULT = ctypes.c_ssize_t
 # Clipboard constants.
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -90,9 +104,15 @@ class Config:
         self.paste = bool(data.get("paste", True))
         self.restore_clipboard = bool(data.get("restore_clipboard", True))
         self.pre_roll_ms = max(0, int(data.get("pre_roll_ms", 350)))
-        # Never risk making the keyboard unusable by default. When enabled,
-        # the hook consumes Ctrl+Z+X to prevent Undo/Cut in the target app.
-        self.suppress_chord = bool(data.get("suppress_chord", False))
+        self.hotkey = tuple(str(x).upper() for x in data.get("hotkey", ["CTRL", "SHIFT", "SPACE"]))
+        if not self.hotkey or any(x not in KEY_GROUPS for x in self.hotkey):
+            raise ValueError("hotkey must contain names from CTRL, SHIFT, SPACE")
+        # Ctrl/Shift/Space have no edit action, so consuming the active chord
+        # avoids accidental shortcuts without risking Undo/Cut.
+        self.suppress_chord = bool(data.get("suppress_chord", True))
+        self.streaming = bool(data.get("streaming", True))
+        self.stream_interval_ms = max(800, int(data.get("stream_interval_ms", 1800)))
+        self.type_text = bool(data.get("type_text", True))
 
 
 class Clipboard:
@@ -172,8 +192,9 @@ class KeyboardHook:
     only via a queue, so audio/transcription never happens inside the hook.
     """
 
-    def __init__(self, events: queue.Queue[str], suppress_chord: bool = False):
+    def __init__(self, events: queue.Queue[str], hotkey: tuple[str, ...], suppress_chord: bool = False):
         self.events = events
+        self.hotkey = hotkey
         self.suppress_chord = suppress_chord
         self.pressed: set[int] = set()
         self.active = False
@@ -221,15 +242,16 @@ class KeyboardHook:
                         vk = int(info.vkCode)
                         down = w_param in (WM_KEYDOWN, WM_SYSKEYDOWN)
                         up = w_param in (WM_KEYUP, WM_SYSKEYUP)
-                        tracked = CTRL_KEYS | {VK_Z, VK_X}
+                        tracked = set().union(*(KEY_GROUPS[name] for name in self.hotkey))
                         if vk in tracked:
                             was_active = self.active
+                            key_name = VK_TO_KEY[vk]
                             if down:
-                                self.pressed.add(VK_CONTROL if vk in CTRL_KEYS else vk)
+                                self.pressed.add(key_name)
                             elif up:
-                                self.pressed.discard(VK_CONTROL if vk in CTRL_KEYS else vk)
+                                self.pressed.discard(key_name)
 
-                            now_active = {VK_CONTROL, VK_Z, VK_X}.issubset(self.pressed)
+                            now_active = set(self.hotkey).issubset(self.pressed)
                             if now_active and not self.active:
                                 self.active = True
                                 self.events.put("start")
@@ -278,10 +300,15 @@ class DictationApp:
         self.blocks: list[np.ndarray] = []
         self.pre_roll: deque[np.ndarray] = deque()
         self.pre_roll_samples = int(16000 * config.pre_roll_ms / 1000)
+        self.audio_started_at: float | None = None
         self.audio_error: Exception | None = None
         self.stream: sd.InputStream | None = None
-        self.keyboard = KeyboardHook(self.events, config.suppress_chord)
+        self.keyboard = KeyboardHook(self.events, config.hotkey, config.suppress_chord)
         self.transcribing = threading.Lock()
+        self.stream_stop = threading.Event()
+        self.stream_thread: threading.Thread | None = None
+        self.stream_emitted = ""
+        self.stream_text_lock = threading.Lock()
         self.temp_dir = Path(tempfile.gettempdir()) / "whisperflo-kairos"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -294,7 +321,7 @@ class DictationApp:
         self.stream = sd.InputStream(**kwargs)
         self.stream.start()
         self.keyboard.start()
-        logging.info("Ready. Hold Ctrl+Z+X, speak, then release any key. Press Ctrl+C to quit.")
+        logging.info("Ready. Hold %s, speak, then release any key. Press Ctrl+C to quit.", "+".join(self.config.hotkey))
         try:
             while True:
                 try:
@@ -342,6 +369,14 @@ class DictationApp:
         with self.audio_lock:
             self.blocks = list(self.pre_roll)
             self.recording = True
+            self.audio_started_at = time.monotonic()
+        self.stream_emitted = ""
+        self.stream_stop.clear()
+        if self.config.streaming:
+            self.stream_thread = threading.Thread(
+                target=self._stream_transcription, name="stream-transcription", daemon=True
+            )
+            self.stream_thread.start()
         logging.info("[listening]")
 
     def stop_recording(self) -> None:
@@ -351,16 +386,68 @@ class DictationApp:
             self.recording = False
             samples = np.concatenate(self.blocks) if self.blocks else np.array([], dtype=np.float32)
             self.blocks = []
+        self.stream_stop.set()
+        if self.stream_thread and self.stream_thread is not threading.current_thread():
+            self.stream_thread.join(timeout=4)
+        self.stream_thread = None
         if len(samples) < 1600:  # less than 100 ms
             logging.info("[ignored: recording too short]")
             return
         threading.Thread(target=self.transcribe, args=(samples,), daemon=True).start()
 
+    def _snapshot_samples(self) -> np.ndarray:
+        with self.audio_lock:
+            return np.concatenate(self.blocks) if self.blocks else np.array([], dtype=np.float32)
+
+    def _stream_transcription(self) -> None:
+        """Periodically decode the growing recording and type only new text.
+
+        Whisper is not truly token-streaming through the CLI, so this uses
+        overlapping full-context decodes. Text is emitted only when the new
+        result still has the already-typed text as a prefix, preventing most
+        duplicate typing while keeping latency reasonable on a CPU.
+        """
+        while not self.stream_stop.wait(self.config.stream_interval_ms / 1000):
+            samples = self._snapshot_samples()
+            if len(samples) < 16000:  # wait until there is at least one second
+                continue
+            text = self._decode(samples, "stream")
+            if not text:
+                continue
+            with self.stream_text_lock:
+                if text.startswith(self.stream_emitted):
+                    delta = text[len(self.stream_emitted):].lstrip()
+                    if delta:
+                        type_text(delta)
+                    self.stream_emitted = text
+                    logging.info("[partial] %s", text)
+                else:
+                    logging.info("[partial revision skipped] %s", text)
+
     def transcribe(self, samples: np.ndarray) -> None:
-        if not self.transcribing.acquire(blocking=False):
-            logging.warning("Still transcribing the previous clip; ignoring this one")
+        text = self._decode(samples, "final")
+        if not text:
+            logging.info("[no speech detected]")
             return
-        wav_path = self.temp_dir / f"clip-{os.getpid()}-{time.time_ns()}.wav"
+        logging.info("[text] %s", text)
+        with self.stream_text_lock:
+            already_typed = self.stream_emitted
+            if self.config.type_text:
+                if not already_typed:
+                    type_text(text)
+                elif text.startswith(already_typed):
+                    delta = text[len(already_typed):].lstrip()
+                    if delta:
+                        type_text(delta)
+                else:
+                    logging.warning("Final transcription revised earlier text; not duplicating output")
+            elif self.config.paste:
+                paste_text(text, self.config.restore_clipboard)
+
+    def _decode(self, samples: np.ndarray, label: str) -> str:
+        if not self.transcribing.acquire(blocking=False):
+            return ""
+        wav_path = self.temp_dir / f"{label}-{os.getpid()}-{time.time_ns()}.wav"
         try:
             write_wav(wav_path, samples)
             command = [
@@ -371,21 +458,21 @@ class DictationApp:
                 "-t", str(self.config.threads),
                 "-nt", "-np",
             ]
-            logging.info("[transcribing]")
-            result = subprocess.run(command, capture_output=True, text=True, cwd=ROOT)
+            logging.info("[%s transcribing]", label)
+            result = subprocess.run(
+                command, capture_output=True, text=True, cwd=ROOT, timeout=45
+            )
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()[-1200:]
                 logging.error("whisper.cpp failed (%s): %s", result.returncode, detail)
-                return
-            text = clean_transcription(result.stdout)
-            if not text:
-                logging.info("[no speech detected]")
-                return
-            logging.info("[text] %s", text)
-            if self.config.paste:
-                paste_text(text, self.config.restore_clipboard)
+                return ""
+            return clean_transcription(result.stdout)
+        except subprocess.TimeoutExpired:
+            logging.warning("[%s transcription timed out]", label)
+            return ""
         except Exception:
             logging.exception("Transcription failed")
+            return ""
         finally:
             self.transcribing.release()
             try:
@@ -415,6 +502,33 @@ def clean_transcription(output: str) -> str:
             line = line.split("]", 1)[1].strip()
         lines.append(line)
     return " ".join(lines).strip()
+
+
+def type_text(text: str) -> None:
+    """Type Unicode text directly using SendInput, without the clipboard."""
+    if not text:
+        return
+    inputs = []
+    for char in text:
+        code = ord(char)
+        if code == 10:
+            code = 13
+        if code == 13:
+            inputs.append(INPUT(0, _INPUTUNION(ki=KEYBDINPUT(0, 0, KEYEVENTF_UNICODE, 0, None))))
+            inputs.append(INPUT(0, _INPUTUNION(ki=KEYBDINPUT(0, 0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
+        elif code <= 0xFFFF:
+            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, code, KEYEVENTF_UNICODE, 0, None))))
+            inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
+        else:
+            code -= 0x10000
+            for unit in (0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF)):
+                inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE, 0, None))))
+                inputs.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
+    if inputs:
+        array = (INPUT * len(inputs))(*inputs)
+        sent = ctypes.windll.user32.SendInput(len(inputs), ctypes.byref(array), ctypes.sizeof(INPUT))
+        if sent != len(inputs):
+            logging.warning("Could not type all text (SendInput returned %s/%s)", sent, len(inputs))
 
 
 def paste_text(text: str, restore: bool) -> None:
