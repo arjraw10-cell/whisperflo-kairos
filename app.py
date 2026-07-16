@@ -40,6 +40,9 @@ VK_RCONTROL = 0xA3
 VK_Z = 0x5A
 VK_X = 0x58
 CTRL_KEYS = {VK_CONTROL, VK_LCONTROL, VK_RCONTROL}
+WPARAM = ctypes.c_size_t
+LPARAM = ctypes.c_ssize_t
+LRESULT = ctypes.c_ssize_t
 
 # Clipboard constants.
 CF_UNICODETEXT = 13
@@ -194,9 +197,8 @@ class KeyboardHook:
         try:
             # LRESULT is a pointer-sized signed integer; wintypes does not
             # expose it on every Python/Windows build.
-            lresult = ctypes.c_ssize_t
             callback_type = ctypes.WINFUNCTYPE(
-                lresult, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+                LRESULT, ctypes.c_int, WPARAM, LPARAM
             )
 
             @callback_type
@@ -226,7 +228,10 @@ class KeyboardHook:
                         # ends it, so the target app never sees Undo/Cut.
                         if self.active or was_active:
                             return 1
-                return ctypes.windll.user32.CallNextHookEx(None, n_code, w_param, l_param)
+                call_next = ctypes.windll.user32.CallNextHookEx
+                call_next.argtypes = [wintypes.HHOOK, ctypes.c_int, WPARAM, LPARAM]
+                call_next.restype = LRESULT
+                return call_next(None, n_code, w_param, l_param)
 
             self._proc = callback
             get_module = ctypes.windll.kernel32.GetModuleHandleW
