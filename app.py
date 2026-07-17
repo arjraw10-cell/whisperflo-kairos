@@ -420,16 +420,19 @@ class DictationApp:
 
     def transcribe(self, samples: np.ndarray) -> None:
         # Nothing is typed while recording. Release ends recording, then the
-        # local transcript is optionally cleaned up by Groq before insertion.
+        # local transcript is optionally cleaned up by Cerebras before insertion.
         text = self._decode(samples, "final", wait=True)
         if not text:
             logging.info("[no speech detected]")
             return
         logging.info("[text] %s", text)
         formatted = format_with_cerebras(text, self.config)
-        if formatted:
+        if formatted and not _is_hallucination(formatted):
             text = formatted
             logging.info("[formatted] %s", text)
+        if _is_hallucination(text):
+            logging.info("[no speech detected]")
+            return
         type_text(text)
 
     def _decode(self, samples: np.ndarray, label: str, wait: bool = False) -> str:
@@ -575,6 +578,50 @@ def write_wav(path: Path, samples: np.ndarray) -> None:
         wav.writeframes(pcm.tobytes())
 
 
+# Well-known Whisper hallucination patterns on silence/near-silence.
+_HALLUCINATION_RE = re.compile(
+    r"(?:([^\W\d_])\1{5,})"    # same letter repeated 6+ times
+    r"|(?:\.{4,})"             # four or more dots
+    r"|(?:[,\.\-_\?\!\…]{3,})",  # 3+ punctuation chars in a row
+    re.UNICODE,
+)
+
+_COMMON_HALLUCINATIONS = {
+    "thank you for watching",
+    "thanks for watching",
+    "thank you for watching.",
+    "thanks for watching.",
+    "sous-titrage st' 501",
+    "please subscribe",
+    "subscribe",
+    "music",
+    "thank you.",
+    "thanks.",
+    "bye.",
+    "goodbye.",
+}
+
+
+def _is_hallucination(text: str) -> bool:
+    """Return True if the text is likely a Whisper hallucination."""
+    if not text:
+        return True
+    stripped = text.strip(".,!?- \t")
+    if not stripped:
+        return True
+    # Reject known hallucination phrases.
+    if stripped.lower() in _COMMON_HALLUCINATIONS:
+        return True
+    # If more than half the characters are punctuation, it's probably noise.
+    punct_count = sum(1 for c in stripped if not c.isalnum() and not c.isspace())
+    if punct_count > len(stripped) * 0.5:
+        return True
+    # Reject strings with long repeated character runs.
+    if _HALLUCINATION_RE.search(stripped):
+        return True
+    return False
+
+
 def clean_transcription(output: str) -> str:
     lines = []
     for line in output.splitlines():
@@ -585,7 +632,14 @@ def clean_transcription(output: str) -> str:
         if "]" in line and line.startswith("["):
             line = line.split("]", 1)[1].strip()
         lines.append(line)
-    return " ".join(lines).strip()
+    text = " ".join(lines).strip()
+    if not text:
+        return text
+    text = text.strip(".,!?- ")
+    if _is_hallucination(text):
+        logging.info("[hallucination filtered: %s]", text)
+        return ""
+    return text
 
 
 def type_text(text: str) -> None:
