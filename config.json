@@ -1,5 +1,5 @@
 {
-  "model": "models/ggml-small.en.bin",
+  "model": "models/ggml-base.en.bin",
   "hotkey": ["CTRL", "SHIFT", "SPACE"],
   "whisper_cli": "bin/Release/whisper-cli.exe",
   "language": "en",
